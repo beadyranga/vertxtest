@@ -39,17 +39,52 @@
 
 
   <dependencies>
-
     <dependency>
       <groupId>io.vertx</groupId>
       <artifactId>vertx-core</artifactId>
-      <version>${vertx.version}</version>
     </dependency>
+    <!-- tag::web-deps[] -->
     <dependency>
       <groupId>io.vertx</groupId>
       <artifactId>vertx-web</artifactId>
-      <version>${vertx.version}</version>
     </dependency>
+   <dependency>
+      <groupId>io.vertx</groupId>
+      <artifactId>vertx-web-templ-freemarker</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>com.github.rjeschke</groupId>
+      <artifactId>txtmark</artifactId>
+      <version>0.13</version>
+    </dependency>
+    <!-- end::web-deps[] -->
+    <!-- tag::db-deps[] -->
+    <dependency>
+      <groupId>io.vertx</groupId>
+      <artifactId>vertx-jdbc-client</artifactId>
+    </dependency>
+    <!--<dependency>-->
+      <!--<groupId>org.hsqldb</groupId>-->
+      <!--<artifactId>hsqldb</artifactId>-->
+      <!--<version>2.3.4</version>-->
+    <!--</dependency>-->
+    <!-- end::db-deps[] -->
+
+    <!-- tag::logger[] -->
+    <dependency>
+      <groupId>ch.qos.logback</groupId>
+      <artifactId>logback-classic</artifactId>
+      <version>1.2.3</version>
+    </dependency>
+    <!-- end::logger[] -->
+
+    <dependency>
+      <groupId>io.vertx</groupId>
+      <artifactId>vertx-unit</artifactId>
+      <scope>test</scope>
+    </dependency>
+
     <dependency>
       <groupId>io.vertx</groupId>
       <artifactId>vertx-junit5</artifactId>
@@ -62,6 +97,41 @@
       <artifactId>junit-platform-launcher</artifactId>
       <version>${junit-platform-launcher.version}</version>
       <scope>test</scope>
+    </dependency>
+
+    <!--<dependency>-->
+      <!--<groupId>io.vertx</groupId>-->
+      <!--<artifactId>vertx-mysql-postgresql-client</artifactId>-->
+      <!--<version>3.4.2</version>-->
+    <!--</dependency>-->
+
+    <!--<dependency>-->
+      <!--<groupId>io.vertx</groupId>-->
+      <!--<artifactId>vertx-jdbc-client</artifactId>-->
+      <!--<version>3.6.2</version>-->
+    <!--</dependency>-->
+
+    <dependency>
+      <groupId>mysql</groupId>
+      <artifactId>mysql-connector-java</artifactId>
+      <version>5.1.6</version>
+    </dependency>
+
+    <!-- https://mvnrepository.com/artifact/io.vertx/vertx-mysql-postgresql-client -->
+    <dependency>
+      <groupId>io.vertx</groupId>
+      <artifactId>vertx-mysql-postgresql-client</artifactId>
+      <version>3.6.2</version>
+    </dependency>
+    <dependency>
+      <groupId>io.vertx</groupId>
+      <artifactId>vertx-sql-common</artifactId>
+      <version>3.6.2</version>
+  </dependency>
+    <dependency>
+      <groupId>io.vertx</groupId>
+      <artifactId>vertx-config</artifactId>
+      <version>3.6.2</version>
     </dependency>
   </dependencies>
 

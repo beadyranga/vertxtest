@@ -1,24 +1,355 @@
 package io.vertx.vertxtest;
 
+import io.vertx.config.ConfigRetriever;
 import io.vertx.core.AbstractVerticle;
+import io.vertx.core.CompositeFuture;
 import io.vertx.core.Future;
+import io.vertx.core.http.HttpServerResponse;
+import io.vertx.core.json.JsonArray;
+import io.vertx.core.json.JsonObject;
+import io.vertx.ext.jdbc.JDBCClient;
+import io.vertx.ext.sql.SQLConnection;
+import io.vertx.ext.sql.SQLOptions;
+import io.vertx.ext.sql.UpdateResult;
+import io.vertx.ext.web.Router;
+import io.vertx.ext.web.RoutingContext;
+import io.vertx.ext.web.handler.BodyHandler;
+import io.vertx.ext.web.handler.StaticHandler;
+
+import java.util.List;
+import java.util.NoSuchElementException;
+import java.util.stream.Collectors;
+
+import static io.vertx.vertxtest.ActionHelper.*;
+
 
 public class MainVerticle extends AbstractVerticle {
 
-  @Override
-  public void start(Future<Void> startFuture) throws Exception {
-    vertx.createHttpServer().requestHandler(req -> {
-      req.response()
-        .putHeader("content-type", "text/plain")
-        .end("Hello from Vert.x!");
-    }).listen(8080, http -> {
-      if (http.succeeded()) {
-        startFuture.complete();
-        System.out.println("HTTP server started on http://localhost:8080");
+
+  // tag::db-and-logger[]
+  private JDBCClient dbClient;
+
+
+  public void start(Future<Void> startFuture) {
+    // Create a router object.
+    Router router = Router.router(vertx);
+
+    // Bind "/" to our hello message - so we are still compatible.
+    router.route("/").handler(routingContext -> {
+      HttpServerResponse response = routingContext.response();
+      response
+        .putHeader("content-type", "text/html")
+        .end("<h1>Hello from my first Vert.x 3 application</h1>");
+    });
+
+    // Serve static resources from the /assets directory
+    router.route("/assets/*").handler(StaticHandler.create("assets"));
+    router.get("/api/articles").handler(this::getAll);
+    router.get("/api/articles/:id").handler(this::getOne);
+    router.route("/api/articles*").handler(BodyHandler.create());
+    router.post("/api/articles").handler(this::addOne);
+    router.delete("/api/articles/:id").handler(this::deleteOne);
+    router.put("/api/articles/:id").handler(this::updateOne);
+
+    ConfigRetriever retriever = ConfigRetriever.create(vertx);
+
+    // Start sequence:
+    // 1 - Retrieve the configuration
+    //      |- 2 - Create the JDBC client
+    //      |- 3 - Connect to the database (retrieve a connection)
+    //              |- 4 - Create table if needed
+    //                   |- 5 - Add some data if needed
+    //                          |- 6 - Close connection when done
+    //              |- 7 - Start HTTP server
+    //      |- 9 - we are done!
+
+    ConfigRetriever.getConfigAsFuture(retriever)
+      .compose(config -> {
+//        dbClient = JDBCClient.createShared(vertx, config, "Raw");
+        dbClient = JDBCClient.createShared(vertx, new JsonObject()  // <1>
+          .put("url", "jdbc:mysql://localhost:3306/raw")
+          .put("driver_class", "com.mysql.jdbc.Driver")
+          .put("max_pool_size", 30)
+          .put("user", "root")
+          .put("password", ""));
+        return connect()
+          .compose(connection -> {
+            Future<Void> future = Future.future();
+            createTableIfNeeded(connection)
+              .compose(this::createSomeDataIfNone)
+              .setHandler(x -> {
+                connection.close();
+                future.handle(x.mapEmpty());
+              });
+            return future;
+          })
+          .compose(v -> createHttpServer(config, router));
+
+      })
+      .setHandler(startFuture);
+  }
+
+  private Future<Void> createHttpServer(JsonObject config, Router router) {
+    Future<Void> future = Future.future();
+    vertx
+      .createHttpServer()
+      .requestHandler(router::accept)
+      .listen(
+        config.getInteger("HTTP_PORT", 8080),
+        res -> future.handle(res.mapEmpty())
+      );
+    return future;
+  }
+
+
+
+  private Future<SQLConnection> createSomeDataIfNone(SQLConnection connection) {
+    Future<SQLConnection> future = Future.future();
+    connection.query("SELECT * FROM Articles", select -> {
+      if (select.failed()) {
+        future.fail(select.cause());
       } else {
-        startFuture.fail(http.cause());
+        if (select.result().getResults().isEmpty()) {
+          Article article1 = new Article("Fallacies of distributed computing",
+            "https://en.wikipedia.org/wiki/Fallacies_of_distributed_computing");
+          Article article2 = new Article("Reactive Manifesto",
+            "https://www.reactivemanifesto.org/");
+          Future<Article> insertion1 = insert(connection, article1, false);
+          Future<Article> insertion2 = insert(connection, article2, false);
+          CompositeFuture.all(insertion1, insertion2)
+            .setHandler(r -> future.handle(r.map(connection)));
+        } else {
+          future.complete(connection);
+        }
       }
     });
+    return future;
+  }
+
+
+
+  private Future<SQLConnection> connect() {
+    Future<SQLConnection> future = Future.future();
+    dbClient.getConnection(ar ->
+      future.handle(ar.map(c ->
+          c.setOptions(new SQLOptions().setAutoGeneratedKeys(true))
+        )
+      )
+    );
+    return future;
+  }
+
+  private Future<Article> insert(SQLConnection connection, Article article, boolean closeConnection) {
+    Future<Article> future = Future.future();
+    String sql = "INSERT INTO Articles (title, url) VALUES (?, ?)";
+    connection.updateWithParams(sql,
+      new JsonArray().add(article.getTitle()).add(article.getUrl()),
+      ar -> {
+        if (closeConnection) {
+          connection.close();
+        }
+        future.handle(
+          ar.map(res -> new Article(res.getKeys().getLong(0), article.getTitle(), article.getUrl()))
+        );
+      }
+    );
+    return future;
+  }
+
+  private Future<List<Article>> query(SQLConnection connection) {
+    Future<List<Article>> future = Future.future();
+    connection.query("SELECT * FROM articles", result -> {
+        connection.close();
+        future.handle(
+          result.map(rs -> rs.getRows().stream().map(Article::new).collect(Collectors.toList()))
+        );
+      }
+    );
+    return future;
+  }
+
+  private Future<Article> queryOne(SQLConnection connection, String id) {
+    Future<Article> future = Future.future();
+    String sql = "SELECT * FROM articles WHERE id = ?";
+    connection.queryWithParams(sql, new JsonArray().add(Integer.valueOf(id)), result -> {
+      connection.close();
+      future.handle(
+        result.map(rs -> {
+          List<JsonObject> rows = rs.getRows();
+          if (rows.size() == 0) {
+            throw new NoSuchElementException("No article with id " + id);
+          } else {
+            JsonObject row = rows.get(0);
+            return new Article(row);
+          }
+        })
+      );
+    });
+    return future;
+  }
+
+  private Future<Void> update(SQLConnection connection, String id, Article article) {
+    Future<Void> future = Future.future();
+    String sql = "UPDATE articles SET title = ?, url = ? WHERE id = ?";
+    connection.updateWithParams(sql, new JsonArray().add(article.getTitle()).add(article.getUrl())
+        .add(Integer.valueOf(id)),
+      ar -> {
+        connection.close();
+        if (ar.failed()) {
+          future.fail(ar.cause());
+        } else {
+          UpdateResult ur = ar.result();
+          if (ur.getUpdated() == 0) {
+            future.fail(new NoSuchElementException("No article with id " + id));
+          } else {
+            future.complete();
+          }
+        }
+      });
+    return future;
+  }
+
+  private Future<Void> delete(SQLConnection connection, String id) {
+    Future<Void> future = Future.future();
+    String sql = "DELETE FROM Articles WHERE id = ?";
+    connection.updateWithParams(sql,
+      new JsonArray().add(Integer.valueOf(id)),
+      ar -> {
+        connection.close();
+        if (ar.failed()) {
+          future.fail(ar.cause());
+        } else {
+          if (ar.result().getUpdated() == 0) {
+            future.fail(new NoSuchElementException("Unknown article " + id));
+          } else {
+            future.complete();
+          }
+        }
+      }
+    );
+    return future;
+  }
+
+  private Future<SQLConnection> createTableIfNeeded(SQLConnection connection) {
+    Future<SQLConnection> future = Future.future();
+    vertx.fileSystem().readFile("tables.sql", ar -> {
+      if (ar.failed()) {
+        future.fail(ar.cause());
+      } else {
+        connection.execute(ar.result().toString(),
+          ar2 -> future.handle(ar2.map(connection))
+        );
+      }
+    });
+    return future;
+  }
+
+
+  // ---- HTTP Actions ----
+
+  private void getAll(RoutingContext rc) {
+    connect()
+      .compose(this::query)
+      .setHandler(ok(rc));
+  }
+
+  private void addOne(RoutingContext rc) {
+    Article article = rc.getBodyAsJson().mapTo(Article.class);
+    connect()
+      .compose(connection -> insert(connection, article, true))
+      .setHandler(created(rc));
+  }
+
+
+  private void deleteOne(RoutingContext rc) {
+    String id = rc.pathParam("id");
+    connect()
+      .compose(connection -> delete(connection, id))
+      .setHandler(noContent(rc));
+  }
+
+
+  private void getOne(RoutingContext rc) {
+    String id = rc.pathParam("id");
+    connect()
+      .compose(connection -> queryOne(connection, id))
+      .setHandler(ok(rc));
+  }
+
+  private void updateOne(RoutingContext rc) {
+    String id = rc.request().getParam("id");
+    Article article = rc.getBodyAsJson().mapTo(Article.class);
+    connect()
+      .compose(connection -> update(connection, id, article))
+      .setHandler(noContent(rc));
   }
 
 }
+
+
+
+//
+//  private Future<Void> prepareDatabase() {
+//
+//    Future<Void> future = Future.future();
+//    dbClient = JDBCClient.createShared(vertx, new JsonObject()  // <1>
+//      .put("url", "jdbc:mysql://localhost:3306/raw")
+//      .put("driver_class", "com.mysql.jdbc.Driver")
+//      .put("max_pool_size", 30)
+//      .put("user", "root")
+//      .put("password", ""));
+//
+//    dbClient.getConnection(ar -> {    // <5>
+//      if (ar.failed()) {
+//        LOGGER.error("Could not open a database connection", ar.cause());
+//        future.fail(ar.cause());    // <6>
+//      } else {
+//        SQLConnection connection = ar.result();   // <7>
+//        connection.execute(SQL_CREATE_PAGES_TABLE, create -> {
+//          connection.close();   // <8>
+//          if (create.failed()) {
+//            LOGGER.error("Database preparation error", create.cause());
+//            future.fail(create.cause());
+//          } else {
+//            future.complete();  // <9>
+//          }
+//        });
+//      }
+//    });
+//
+//    return future;
+//
+//  }
+//
+//  private Future<Void> startHttpServer() {
+//    Future<Void> future = Future.future();
+//    HttpServer server = vertx.createHttpServer();   // <1>
+//
+//    Router router = Router.router(vertx);   // <2>
+//    router.route("/").handler(routingContext -> {
+//      HttpServerResponse response = routingContext.response();
+//      response
+//        .putHeader("content-type", "text/html")
+//        .end("<h1>Hello from my first Vert.x 3 application</h1>");
+//    });
+//
+//    router.route("/assets/*").handler(StaticHandler.create("assets"));
+//    router.get("/api/articles").handler(this::getAll);
+//    router.route("/api/articles*").handler(BodyHandler.create());
+//    router.post("/api/articles").handler(this::addOne);
+//
+//
+//    server.requestHandler(router::accept)   // <5>
+//      .listen(8080, ar -> {   // <6>
+//        if (ar.succeeded()) {
+//          LOGGER.info("HTTP server running on port 8080");
+//          future.complete();
+//        } else {
+//          LOGGER.error("Could not start a HTTP server", ar.cause());
+//          future.fail(ar.cause());
+//        }
+//      });
+//
+//    return future;
+//  }
+////  // end::startHttpServer[]
